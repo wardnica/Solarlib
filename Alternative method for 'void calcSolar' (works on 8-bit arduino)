@@ -1,0 +1,163 @@
+const double JULIAN_UNIX_EPOCH = 2440587.5; //Julian Day of unix epoch (01/01/1970)
+const long JULIAN_DATE_1_JAN_2000 = 2451545; //the Julian Day corresponding with the first january of 2000 AD
+const long DAYS_IN_JULIAN_CENTURY = 36525; // one year = 365.25 days (definition)
+
+
+void calcSolar(atime_t t, SolarElements &SE){
+	SE.timeFracDay = ((((double)(second(t) *0.01666666666) + minute(t)) *0.01666666666) + hour(t)) *0.04166666666; //time past midnight, as a fractional day value. noon -> 0.5
+	SE.unixDays = t / 86400; //number of days since 1/1/1970 (unix epoch)
+
+	SE.JDN = JULIAN_UNIX_EPOCH + SE.unixDays; // current Julian Day = Julian Day at unix epoch + days from unix epoch till now
+	//SE.JDN = SE.JDN + (SE.timeFracDay -((double)SE.tzOffset / 24)); //Julian Day corrected by the time fract from noon to the 'time' of that day, and corrected for the timezone offset to Greenwich
+	double A = (SE.timeFracDay - (double)SE.tzOffset *0.04166666666) / DAYS_IN_JULIAN_CENTURY;
+
+	SE.JCN = (SE.JDN - JULIAN_DATE_1_JAN_2000) / DAYS_IN_JULIAN_CENTURY + A; // Julian Century number is calculated
+
+	SE.GMLSdeg = 280.46646 + SE.JCN * (36000.76983 + SE.JCN * 0.0003032); //Geom Mean Long Sun (deg)
+	SE.GMLSdeg = SE.GMLSdeg - (360 * floor(SE.GMLSdeg / 360));
+	SE.GMLSrad = SE.GMLSdeg*DEG_TO_RAD;
+
+
+	SE.GMASdeg = 357.52911 + SE.JCN*(35999.05029 - 0.0001537 * SE.JCN); //Geom Mean Anom Sun (deg)
+	SE.GMASrad = SE.GMASdeg*DEG_TO_RAD;
+
+
+	SE.EEO = 0.016708634 - SE.JCN*(0.000042037 + 0.0000001267 * SE.JCN); //Eccent Earth Orbit (maybe just 0.01671 to simplify)
+
+
+	// Sun Equation of Center
+	SE.SEC = sin(SE.GMASrad) * (1.914602 - (SE.JCN * (0.004817 + 0.000014 * SE.JCN))) +
+		sin(2 * SE.GMASrad)*(0.019993 - 0.000101*SE.JCN) + sin(3 * SE.GMASrad) * 0.000289;
+
+	SE.STLdeg = SE.GMLSdeg + SE.SEC;	// Sun True Longitude (degrees)
+	SE.STLrad = SE.STLdeg*DEG_TO_RAD; //(rad)
+
+	SE.STAdeg = SE.GMASdeg + SE.SEC;// Sun True Anomaly (degrees)
+	SE.STArad = SE.STAdeg*DEG_TO_RAD; //(rad)
+
+	SE.SRV = (1.000001018 * (1 - SE.EEO * SE.EEO)) / (1 + SE.EEO *cos(SE.STArad));// Sun Radian Vector (Astronomical Units)
+
+	SE.SAL = SE.STLdeg - 0.00569 - (0.00478 *	sin((125.04 - 1934.136 * SE.JCN) * DEG_TO_RAD));// Sun Apparent Longitude (degrees)
+
+	SE.MOE = 23 + (26 + (21.448 - SE.JCN * (46.815 + SE.JCN *	(0.00059 - SE.JCN * 0.001813))) * 0.01666666666) * 0.01666666666;	// Mean Oblique Ecliptic (degrees)
+
+	SE.OC = SE.MOE + 0.00256 * cos((125.04 - 1934.136*SE.JCN)*DEG_TO_RAD);	// Oblique correction (degrees)
+
+	SE.SRA = (atan2(cos(SE.OC * DEG_TO_RAD) * sin(SE.SAL * DEG_TO_RAD),cos(SE.SAL * DEG_TO_RAD))) * RAD_TO_DEG; 	// Sun Right Ascension (degrees)
+	
+	SE.SDec = (asin(sin(SE.OC * DEG_TO_RAD) *	sin(SE.SAL * DEG_TO_RAD))) * RAD_TO_DEG; // Sun Declination (degrees)
+
+	SE.vy = tan((SE.OC * 0.5) * DEG_TO_RAD) * tan((SE.OC * 0.5) * DEG_TO_RAD);	// var y
+
+	// Equation of Time (minutes) //time difference between noon and actual sun's zenit moment
+	SE.EOT = 4 * ((SE.vy * sin(2 * (SE.GMLSdeg * DEG_TO_RAD)) -2 * SE.EEO * sin(SE.GMASdeg * DEG_TO_RAD) +4 * SE.EEO * SE.vy * sin(SE.GMASdeg * DEG_TO_RAD) *cos(2 * (SE.GMLSdeg*DEG_TO_RAD)) -0.5 * SE.vy * SE.vy * sin(4 * (SE.GMLSdeg * DEG_TO_RAD)) -	1.25 * SE.EEO * SE.EEO * sin(2 * (SE.GMASdeg* DEG_TO_RAD))) *	RAD_TO_DEG);
+
+	// Hour Angle Sunrise (degrees)
+	SE.HAS = acos((cos(90.833*DEG_TO_RAD) /	(cos(SE.lat*DEG_TO_RAD) * cos(SE.SDec*DEG_TO_RAD))) -
+		tan(SE.lat * DEG_TO_RAD) * tan(SE.SDec * DEG_TO_RAD)) *
+		RAD_TO_DEG;
+	// Solar Noon - result is given as fraction of a day
+	// Time value is in GMT time zone
+	SE.SolarNoonfrac = (720 - 4 * SE.lon - SE.EOT) * 0.00069444444;
+
+	// SolarNoon is given as a fraction of a day. Add this
+	// to the unixDays value, which currently holds the
+	// whole days since 1970-1-1 00:00
+	SE.SolarNoonDays = SE.unixDays + SE.SolarNoonfrac;
+	// SolarNoonDays is in GMT time zone, correct it to
+	// the input time zone
+	SE.SolarNoonDays = SE.SolarNoonDays + ((double)SE.tzOffset *0.04166666666);
+	// Then convert SolarNoonDays to seconds
+	SE.SolarNoonTime = SE.SolarNoonDays * 86400; //unix time, converted to a time_t format, so hour(SE.solarNoonTime) etc are available!
+
+	// Sunrise Time, given as fraction of a day
+	SE.Sunrise = SE.SolarNoonfrac - SE.HAS * 0.00277777777;
+	// Convert Sunrise to days since 1970-1-1
+	SE.Sunrise = SE.unixDays + SE.Sunrise;
+	// Correct Sunrise to local time zone from GMT
+	SE.Sunrise = SE.Sunrise + ((double)SE.tzOffset *0.04166666666);
+	// Convert Sunrise to seconds since 1970-1-1
+	SE.Sunrise = SE.Sunrise * 86400;
+	// Convert Sunrise to a time_t object (Time library)
+	SE.SunriseTime = (time_t)SE.Sunrise;
+	// Sunset Time
+	SE.Sunset = SE.SolarNoonfrac + SE.HAS * 0.00277777777;
+	// Convert Sunset to days since 1970-1-1
+	SE.Sunset = SE.unixDays + SE.Sunset;
+	// Correct Sunset to local time zone from GMT
+	SE.Sunset = SE.Sunset + ((double)SE.tzOffset *0.04166666666);
+	// Convert Sunset to seconds since 1970-1-1
+	SE.Sunset = SE.Sunset * 86400;
+	// Convert Sunset to a time_t object (Time library)
+	SE.SunsetTime = (time_t)SE.Sunset;
+	// Sunlight Duration (day length, minutes)
+	SE.SunDuration = 8 * SE.HAS;
+
+
+	// True Solar Time (minutes)
+	SE.TST = (SE.timeFracDay * 1440 +
+		SE.EOT + 4 * SE.lon - 60 * SE.tzOffset);
+	// Finish TST calculation by calculating modolu(TST,360) as
+	// it's done in R or Excel. C's fmod doesn't work in the same
+	// way. The floor() function is from the math.h library.
+	SE.TST = SE.TST - (1440 * (floor(SE.TST / 1440)));
+	// Hour Angle (degrees)
+	if (SE.TST / 4 < 0) {
+		SE.HA = SE.TST / 4 + 180;
+	}
+	else if (SE.TST / 4 >= 0) {
+		SE.HA = SE.TST / 4 - 180;
+	}
+	// Solar Zenith Angle (degrees)
+	SE.SZA = (acos(sin(SE.lat * DEG_TO_RAD) *
+		sin(SE.SDec* DEG_TO_RAD) +
+		cos(SE.lat * DEG_TO_RAD) *
+		cos(SE.SDec * DEG_TO_RAD) *
+		cos(SE.HA * DEG_TO_RAD))) * RAD_TO_DEG;
+	// Solar Elevation Angle (degrees above horizontal)
+	SE.SEA = 90 - SE.SZA;
+	SE.SEArad = SE.SEA*DEG_TO_RAD;
+
+	// Approximate Atmospheric Refraction (degrees)
+	if (SE.SEA > 85) { //~perpendicular->no refraction
+		SE.AAR = 0;
+	}
+	else if (SE.SEA > 5) {
+		SE.AAR = (58.1 / tan(SE.SEArad)) -
+			0.07 / (pow(tan(SE.SEArad), 3)) +
+			0.000086 / (pow(tan(SE.SEArad), 5));
+	}
+	else if (SE.SEA > -0.575) {
+		SE.AAR = 1735 + SE.SEA * (-581.2 * SE.SEA *
+			(103.4 + SE.SEA * (-12.79 + SE.SEA * 0.711)));
+	}
+	else {
+		SE.AAR = -20.772 / tan(SE.SEArad);
+	}
+	SE.AAR = SE.AAR / 3600.0;
+	// Solar Elevation Corrected for Atmospheric
+	// refraction (degrees)
+	SE.SEA_Corr = SE.SEA + SE.AAR; //(deg)
+
+
+	// Solar Azimuth Angle (degrees clockwise from North)
+	if (SE.HA > 0) {
+		SE.SAA = (((acos((sin(SE.lat * DEG_TO_RAD) *
+			cos(SE.SZA * DEG_TO_RAD) -
+			sin(SE.SDec * DEG_TO_RAD)) /
+			(cos(SE.lat * DEG_TO_RAD) *
+			sin(SE.SZA * DEG_TO_RAD)))) *
+			RAD_TO_DEG) + 180);
+		SE.SAA = SE.SAA - (360 * (floor(SE.SAA / 360)));
+	}
+	else {
+		SE.SAA = (540 - (acos((((sin(SE.lat * DEG_TO_RAD) *
+			cos(SE.SZA * DEG_TO_RAD))) -
+			sin(SE.SDec * DEG_TO_RAD)) /
+			(cos(SE.lat * DEG_TO_RAD) *
+			sin(SE.SZA * DEG_TO_RAD)))) *
+			RAD_TO_DEG);
+		SE.SAA = SE.SAA - (360 * (floor(SE.SAA / 360)));
+	}
+}
+
